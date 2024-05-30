@@ -16,17 +16,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+
+		go handleConnection(&conn)
 	}
 
+}
+
+func handleConnection(c *net.Conn) {
 	buf := make([]byte, 1024)
 	tmp := make([]byte, 0, 1024)
 
 	for {
-		n, err := conn.Read(buf)
+		n, err := (*c).Read(buf)
 		tmp = append(tmp, buf[:n]...)
 
 		if n < len(buf) {
@@ -65,11 +72,11 @@ func main() {
 	case "GET":
 		switch {
 		case target == "/":
-			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+			(*c).Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 		case target == "/user-agent":
 			body := headers["user-agent"]
 
-			conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
+			(*c).Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
 		case r_echo.MatchString(target):
 			body := ""
 
@@ -78,13 +85,13 @@ func main() {
 				body = matches[1][1:]
 			}
 
-			conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
+			(*c).Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
 		default:
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+			(*c).Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 		}
 	default:
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		(*c).Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
 
-	conn.Close()
+	(*c).Close()
 }
