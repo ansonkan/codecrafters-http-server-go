@@ -41,11 +41,23 @@ func main() {
 		}
 	}
 
-	req_parts := strings.Split(string(tmp), "\r\n")
-	line_parts := strings.Split(req_parts[0], " ")
+	request := string(tmp)
 
-	method := line_parts[0]
-	target := line_parts[1]
+	req_line_end := strings.Index(request, "\r\n")
+	req_line_parts := strings.Split(request[:req_line_end], " ")
+
+	method := req_line_parts[0]
+	target := req_line_parts[1]
+
+	headers_parts := strings.Split(request[req_line_end+len("\r\n"):strings.Index(request, "\r\n\r\n")], "\r\n")
+	r_header, _ := regexp.Compile("^([a-zA-z0-9-_]+): (.+)?$")
+	headers := make(map[string]string) // all lower case
+	for _, v := range headers_parts {
+		matches := r_header.FindStringSubmatch(v)
+		if len(matches) == 3 {
+			headers[strings.ToLower(matches[1])] = matches[2]
+		}
+	}
 
 	r_echo, _ := regexp.Compile("^/echo(/.*)?$")
 
@@ -54,6 +66,10 @@ func main() {
 		switch {
 		case target == "/":
 			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		case target == "/user-agent":
+			body := headers["user-agent"]
+
+			conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
 		case r_echo.MatchString(target):
 			body := ""
 
