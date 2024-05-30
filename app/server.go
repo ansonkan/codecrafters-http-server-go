@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -38,7 +39,6 @@ func main() {
 			}
 			break
 		}
-
 	}
 
 	req_parts := strings.Split(string(tmp), "\r\n")
@@ -47,9 +47,26 @@ func main() {
 	method := line_parts[0]
 	target := line_parts[1]
 
-	if method == "GET" && target == "/" {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-	} else {
+	r_echo, _ := regexp.Compile("^/echo(/.*)?$")
+
+	switch method {
+	case "GET":
+		switch {
+		case target == "/":
+			conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		case r_echo.MatchString(target):
+			body := ""
+
+			matches := r_echo.FindStringSubmatch(target)
+			if len(matches) == 2 {
+				body = matches[1][1:]
+			}
+
+			conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body)))
+		default:
+			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		}
+	default:
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
 
