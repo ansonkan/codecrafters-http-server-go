@@ -16,9 +16,9 @@ const (
 )
 
 var (
-	r_header   = regexp.MustCompile("^([a-zA-z0-9-_]+): (.+)?$")
-	r_get_echo = regexp.MustCompile("^/echo(/.*)?$")
-	r_get_file = regexp.MustCompile("^/files/(.+)$")
+	r_header    = regexp.MustCompile("^([a-zA-z0-9-_]+): (.+)?$")
+	r_path_echo = regexp.MustCompile("^/echo(/.*)?$")
+	r_path_file = regexp.MustCompile("^/files/(.+)$")
 )
 
 func main() {
@@ -76,7 +76,9 @@ func handleConnection(c *net.Conn, dir *string) {
 	method := req_line_parts[0]
 	target := req_line_parts[1]
 
-	headers_parts := strings.Split(request[req_line_end+len("\r\n"):strings.Index(request, "\r\n\r\n")], "\r\n")
+	header_suffix_index := strings.Index(request, "\r\n\r\n")
+
+	headers_parts := strings.Split(request[req_line_end+len("\r\n"):header_suffix_index], "\r\n")
 	headers := make(map[string]string) // all lower case
 	for _, v := range headers_parts {
 		matches := r_header.FindStringSubmatch(v)
@@ -84,6 +86,9 @@ func handleConnection(c *net.Conn, dir *string) {
 			headers[strings.ToLower(matches[1])] = matches[2]
 		}
 	}
+
+	// TODO: would be great it request body is read by chunks and not loading all of them into memory in case of big request body
+	req_body := request[header_suffix_index+len("\r\n\r\n"):]
 
 	response := []byte("HTTP/1.1 404 Not Found\r\n\r\n")
 
@@ -97,18 +102,18 @@ func handleConnection(c *net.Conn, dir *string) {
 			body := headers["user-agent"]
 			response = []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
 
-		case r_get_echo.MatchString(target):
+		case r_path_echo.MatchString(target):
 			body := ""
 
-			matches := r_get_echo.FindStringSubmatch(target)
+			matches := r_path_echo.FindStringSubmatch(target)
 			if len(matches) == 2 {
 				body = matches[1][1:]
 			}
 
 			response = []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
 
-		case r_get_file.MatchString(target):
-			matches := r_get_file.FindStringSubmatch(target)
+		case r_path_file.MatchString(target):
+			matches := r_path_file.FindStringSubmatch(target)
 
 			if len(matches) != 2 {
 				break
@@ -119,6 +124,7 @@ func handleConnection(c *net.Conn, dir *string) {
 				fmt.Printf("Error opening file: %v\n", err)
 				break
 			}
+			defer f.Close()
 
 			f_info, err := f.Stat()
 			if err != nil {
@@ -152,7 +158,23 @@ func handleConnection(c *net.Conn, dir *string) {
 			// TODO: would be great if not just this GET /files/{file_name} path has a different flow
 			return
 		}
+	case "POST":
+		switch {
+		case r_path_file.MatchString(target):
+			matches := r_path_file.FindStringSubmatch(target)
 
+			if len(matches) != 2 {
+				break
+			}
+
+			err := os.WriteFile(path.Join(*dir, matches[1]), []byte(req_body), 0644)
+			if err != nil {
+				response = []byte("HTTP/1.1 500 Internal Server Error\r\n\r\n")
+				break
+			}
+
+			response = []byte("HTTP/1.1 201 Created\r\n\r\n")
+		}
 	}
 
 	(*c).Write(response)
