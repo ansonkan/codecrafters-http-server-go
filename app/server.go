@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -16,10 +17,50 @@ const (
 )
 
 var (
+	valid_encoding_schemes = []string{"gzip"}
+	res_status_description = map[int]string{
+		200: "OK",
+		201: "Created",
+		404: "Not Found",
+		500: "Internal Server Error",
+	}
 	r_header    = regexp.MustCompile("^([a-zA-z0-9-_]+): (.+)?$")
 	r_path_echo = regexp.MustCompile("^/echo(/.*)?$")
 	r_path_file = regexp.MustCompile("^/files/(.+)$")
 )
+
+type Headers = map[string]string
+
+// TODO: better struct? When to use pointer and when not to?
+type Response struct {
+	c            *net.Conn
+	http_version string
+	status       int
+	headers      Headers
+	body         string
+}
+
+func (res *Response) writeStatus() {
+	(*res.c).Write([]byte(fmt.Sprintf("%s %d %s\r\n", res.http_version, res.status, res_status_description[res.status])))
+}
+
+func (res *Response) writeHeaders() {
+	for k, v := range res.headers {
+		(*res.c).Write([]byte(fmt.Sprintf("%s: %s\r\n", strings.ToLower(k), v)))
+	}
+	(*res.c).Write([]byte("\r\n"))
+}
+
+func (res *Response) writeBody() {
+	(*res.c).Write([]byte(res.body))
+}
+
+// TODO: better name?
+func (res *Response) writeResponse() {
+	res.writeStatus()
+	res.writeHeaders()
+	res.writeBody()
+}
 
 func main() {
 	directory := ""
@@ -73,44 +114,53 @@ func handleConnection(c *net.Conn, dir *string) {
 	req_line_end := strings.Index(request, "\r\n")
 	req_line_parts := strings.Split(request[:req_line_end], " ")
 
+	// TODO: what if it is not a valid HTTP request? What to response?
 	method := req_line_parts[0]
 	target := req_line_parts[1]
+	http_version := req_line_parts[2]
 
 	header_suffix_index := strings.Index(request, "\r\n\r\n")
 
-	headers_parts := strings.Split(request[req_line_end+len("\r\n"):header_suffix_index], "\r\n")
-	headers := make(map[string]string) // all lower case
-	for _, v := range headers_parts {
+	req_headers_parts := strings.Split(request[req_line_end+len("\r\n"):header_suffix_index], "\r\n")
+	req_headers := make(Headers) // all lower case
+	for _, v := range req_headers_parts {
 		matches := r_header.FindStringSubmatch(v)
 		if len(matches) == 3 {
-			headers[strings.ToLower(matches[1])] = matches[2]
+			req_headers[strings.ToLower(matches[1])] = matches[2]
 		}
 	}
 
 	// TODO: would be great it request body is read by chunks and not loading all of them into memory in case of big request body
 	req_body := request[header_suffix_index+len("\r\n\r\n"):]
 
-	response := []byte("HTTP/1.1 404 Not Found\r\n\r\n")
+	res := Response{c: c, http_version: http_version, status: 404, headers: make(Headers)}
+
+	if encoding, ok := req_headers["accept-encoding"]; ok && slices.Contains(valid_encoding_schemes, encoding) {
+		res.headers["content-encoding"] = encoding
+	}
 
 	switch method {
 	case "GET":
 		switch {
 		case target == "/":
-			response = []byte("HTTP/1.1 200 OK\r\n\r\n")
+			res.status = 200
 
 		case target == "/user-agent":
-			body := headers["user-agent"]
-			response = []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
+			res.status = 200
+			res.body = req_headers["user-agent"]
+			res.headers["content-type"] = "text/plain"
+			res.headers["content-length"] = fmt.Sprintf("%d", len(res.body))
 
 		case r_path_echo.MatchString(target):
-			body := ""
+			res.status = 200
 
 			matches := r_path_echo.FindStringSubmatch(target)
 			if len(matches) == 2 {
-				body = matches[1][1:]
+				res.body = matches[1][1:]
 			}
 
-			response = []byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(body), body))
+			res.headers["content-type"] = "text/plain"
+			res.headers["content-length"] = fmt.Sprintf("%d", len(res.body))
 
 		case r_path_file.MatchString(target):
 			matches := r_path_file.FindStringSubmatch(target)
@@ -132,7 +182,12 @@ func handleConnection(c *net.Conn, dir *string) {
 				break
 			}
 
-			(*c).Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %d\r\n\r\n", f_info.Size())))
+			res.status = 200
+			res.headers["content-type"] = "application/octet-stream"
+			res.headers["content-length"] = fmt.Sprintf("%d", f_info.Size())
+
+			res.writeStatus()
+			res.writeHeaders()
 
 			var seek_offset int64 = 0
 			var seek_err error
@@ -142,15 +197,15 @@ func handleConnection(c *net.Conn, dir *string) {
 
 			for {
 				_, seek_err = f.Seek(seek_offset, 0)
-				Check(seek_err)
+				check(seek_err)
 
 				_, read_err = f.Read(buf)
 				if read_err == io.EOF {
 					break
 				}
-				Check(read_err)
+				check(read_err)
 
-				(*c).Write(buf)
+				(*res.c).Write(buf)
 
 				seek_offset += read_file_buf_size
 			}
@@ -167,20 +222,21 @@ func handleConnection(c *net.Conn, dir *string) {
 				break
 			}
 
+			// TOOD: read request body, and write file in chunks
 			err := os.WriteFile(path.Join(*dir, matches[1]), []byte(req_body), 0644)
 			if err != nil {
-				response = []byte("HTTP/1.1 500 Internal Server Error\r\n\r\n")
+				res.status = 500
 				break
 			}
 
-			response = []byte("HTTP/1.1 201 Created\r\n\r\n")
+			res.status = 201
 		}
 	}
 
-	(*c).Write(response)
+	res.writeResponse()
 }
 
-func Check(e error) {
+func check(e error) {
 	if e != nil {
 		log.Fatal(e)
 	}
