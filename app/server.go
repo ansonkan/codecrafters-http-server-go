@@ -135,8 +135,13 @@ func handleConnection(c *net.Conn, dir *string) {
 
 	res := Response{c: c, http_version: http_version, status: 404, headers: make(Headers)}
 
-	if encoding, ok := req_headers["accept-encoding"]; ok && slices.Contains(valid_encoding_schemes, encoding) {
-		res.headers["content-encoding"] = encoding
+	if accept_encoding, ok := req_headers["accept-encoding"]; ok {
+		for _, v := range strings.Split(accept_encoding, ",") {
+			if encoding := strings.Trim(v, " "); slices.Contains(valid_encoding_schemes, encoding) {
+				res.headers["content-encoding"] = encoding
+				break
+			}
+		}
 	}
 
 	switch method {
