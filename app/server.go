@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log"
@@ -40,26 +42,35 @@ type Response struct {
 	body         string
 }
 
-func (res *Response) writeStatus() {
+// TODO: better name?
+func (res *Response) writeResponse() {
+	// status
 	(*res.c).Write([]byte(fmt.Sprintf("%s %d %s\r\n", res.http_version, res.status, res_status_description[res.status])))
-}
 
-func (res *Response) writeHeaders() {
+	// encoding
+	switch res.headers["content-encoding"] {
+	case "gzip":
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+
+		_, err := zw.Write([]byte(res.body))
+		if err != nil {
+			log.Fatal(err)
+		}
+		zw.Close()
+
+		res.body = buf.String()
+		res.headers["content-length"] = fmt.Sprintf("%d", buf.Len())
+	}
+
+	// headers
 	for k, v := range res.headers {
 		(*res.c).Write([]byte(fmt.Sprintf("%s: %s\r\n", strings.ToLower(k), v)))
 	}
 	(*res.c).Write([]byte("\r\n"))
-}
 
-func (res *Response) writeBody() {
+	// body
 	(*res.c).Write([]byte(res.body))
-}
-
-// TODO: better name?
-func (res *Response) writeResponse() {
-	res.writeStatus()
-	res.writeHeaders()
-	res.writeBody()
 }
 
 func main() {
@@ -160,7 +171,7 @@ func handleConnection(c *net.Conn, dir *string) {
 			res.status = 200
 
 			matches := r_path_echo.FindStringSubmatch(target)
-			if len(matches) == 2 {
+			if len(matches) == 2 && matches[1] != "" {
 				res.body = matches[1][1:]
 			}
 
@@ -191,8 +202,7 @@ func handleConnection(c *net.Conn, dir *string) {
 			res.headers["content-type"] = "application/octet-stream"
 			res.headers["content-length"] = fmt.Sprintf("%d", f_info.Size())
 
-			res.writeStatus()
-			res.writeHeaders()
+			res.writeResponse()
 
 			var seek_offset int64 = 0
 			var seek_err error
@@ -210,6 +220,7 @@ func handleConnection(c *net.Conn, dir *string) {
 				}
 				check(read_err)
 
+				// how to encode this with gzip?
 				(*res.c).Write(buf)
 
 				seek_offset += read_file_buf_size
