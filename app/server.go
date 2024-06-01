@@ -198,30 +198,58 @@ func handleConnection(c *net.Conn, dir *string) {
 				break
 			}
 
+			is_gzip := res.headers["content-encoding"] == "gzip"
+			zw := gzip.NewWriter(*res.c)
+			defer zw.Close()
+
+			/*
+				CURL "--compressed" options can decode the gzipped response body correctly:
+				curl -i --header "Accept-Encoding: gzip" --compressed http://localhost:4221/files/small_text_file.txt
+
+				Guess "content-length" is really optional.
+				While "Transfer-Encoding: chunked" seems unrelated because the gzipping body here is not in chunks that
+				separated by "\r\n", https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding
+			*/
 			res.status = 200
 			res.headers["content-type"] = "application/octet-stream"
-			res.headers["content-length"] = fmt.Sprintf("%d", f_info.Size())
+			if !is_gzip {
+				res.headers["content-length"] = fmt.Sprintf("%d", f_info.Size())
+			}
 
-			res.writeResponse()
+			// TODO: merge this gzip file streaming logic with struct "Response"
+			// status
+			(*res.c).Write([]byte(fmt.Sprintf("%s %d %s\r\n", res.http_version, res.status, res_status_description[res.status])))
+
+			// headers
+			for k, v := range res.headers {
+				(*res.c).Write([]byte(fmt.Sprintf("%s: %s\r\n", strings.ToLower(k), v)))
+			}
+			(*res.c).Write([]byte("\r\n"))
 
 			var seek_offset int64 = 0
-			var seek_err error
-			var read_err error
-
 			buf := make([]byte, read_file_buf_size)
 
 			for {
-				_, seek_err = f.Seek(seek_offset, 0)
+				_, seek_err := f.Seek(seek_offset, 0)
 				check(seek_err)
 
-				_, read_err = f.Read(buf)
+				n, read_err := f.Read(buf)
 				if read_err == io.EOF {
 					break
 				}
 				check(read_err)
 
 				// how to encode this with gzip?
-				(*res.c).Write(buf)
+				if is_gzip {
+					_, err := zw.Write(buf[:n])
+					if err != nil {
+						fmt.Println("Error writing gzipped bytes to connection:", err)
+						return
+					}
+
+				} else {
+					(*res.c).Write(buf)
+				}
 
 				seek_offset += read_file_buf_size
 			}
